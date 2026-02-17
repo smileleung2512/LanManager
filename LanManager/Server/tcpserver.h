@@ -8,6 +8,7 @@
 #include <QMap>
 #include <QTimer>
 #include <QDateTime>
+#include <QSize>
 #include "../Common/protocol.h"
 
 // 客户端连接信息
@@ -67,6 +68,10 @@ public:
     
     // 卸载软件
     void uninstallSoftware(qintptr clientId, const QString& softwareName, const QString& uninstallCmd);
+
+    // 屏幕监控
+    void startScreenStream(qintptr clientId, int intervalMs = 1000, int quality = 70);
+    void stopScreenStream(qintptr clientId);
     
 signals:
     void clientConnected(qintptr clientId);
@@ -77,6 +82,7 @@ signals:
     void installResult(qintptr clientId, bool success, const QString& message);
     void uninstallResult(qintptr clientId, bool success, const QString& message);
     void fileTransferProgress(qintptr clientId, int percent);
+    void screenFrameReceived(qintptr clientId, const QByteArray& imageData, qint64 timestamp, const QSize& size);
     void logMessage(const QString& message);
     
 private slots:
@@ -99,6 +105,7 @@ private:
     void handleInstallResponse(qintptr clientId, const QJsonObject& json);
     void handleUninstallResponse(qintptr clientId, const QJsonObject& json);
     void handleFileTransferAck(qintptr clientId, const QJsonObject& json);
+    void handleScreenFrame(qintptr clientId, const QJsonObject& json);
     
     // 继续文件传输
     void continueFileTransfer(qintptr clientId);

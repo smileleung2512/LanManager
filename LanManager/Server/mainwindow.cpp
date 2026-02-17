@@ -4,6 +4,7 @@
 #include <QGroupBox>
 #include <QHeaderView>
 #include <QFileDialog>
+#include <QFile>
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QLineEdit>
@@ -12,11 +13,15 @@
 #include <QMenuBar>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QDir>
+#include <QPixmap>
+#include <QSignalBlocker>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_server(new TcpServer(this))
     , m_currentClient(-1)
+    , m_replayTimer(new QTimer(this))
 {
     setupUI();
     createMenuBar();
@@ -30,7 +35,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_server, &TcpServer::installResult, this, &MainWindow::onInstallResult);
     connect(m_server, &TcpServer::uninstallResult, this, &MainWindow::onUninstallResult);
     connect(m_server, &TcpServer::fileTransferProgress, this, &MainWindow::onFileTransferProgress);
+    connect(m_server, &TcpServer::screenFrameReceived, this, &MainWindow::onScreenFrameReceived);
     connect(m_server, &TcpServer::logMessage, this, &MainWindow::onLogMessage);
+    connect(m_replayTimer, &QTimer::timeout, this, &MainWindow::onReplayTick);
     
     setWindowTitle("局域网远程管理系统 - 服务端");
     resize(1200, 800);
@@ -147,9 +154,66 @@ void MainWindow::setupUI()
     
     softwareLayout->addLayout(softwareBtnLayout);
     softwareLayout->addWidget(m_softwareTree);
-    
+
+    // 屏幕监控页
+    QWidget* screenPage = new QWidget();
+    QVBoxLayout* screenLayout = new QVBoxLayout(screenPage);
+
+    QHBoxLayout* screenCtrlLayout = new QHBoxLayout();
+    m_btnStartScreen = new QPushButton("开始监控");
+    m_btnStopScreen = new QPushButton("停止监控");
+    m_btnStopScreen->setEnabled(false);
+
+    m_screenIntervalSpin = new QSpinBox();
+    m_screenIntervalSpin->setRange(200, 10000);
+    m_screenIntervalSpin->setValue(1000);
+    m_screenIntervalSpin->setSuffix(" ms");
+
+    m_screenQualitySpin = new QSpinBox();
+    m_screenQualitySpin->setRange(30, 90);
+    m_screenQualitySpin->setValue(70);
+
+    screenCtrlLayout->addWidget(m_btnStartScreen);
+    screenCtrlLayout->addWidget(m_btnStopScreen);
+    screenCtrlLayout->addWidget(new QLabel("抓帧间隔:"));
+    screenCtrlLayout->addWidget(m_screenIntervalSpin);
+    screenCtrlLayout->addWidget(new QLabel("图像质量:"));
+    screenCtrlLayout->addWidget(m_screenQualitySpin);
+    screenCtrlLayout->addStretch();
+
+    m_screenPreviewLabel = new QLabel("暂无画面");
+    m_screenPreviewLabel->setAlignment(Qt::AlignCenter);
+    m_screenPreviewLabel->setMinimumHeight(280);
+    m_screenPreviewLabel->setStyleSheet("QLabel { background: #101010; color: #D0D0D0; border: 1px solid #303030; }");
+
+    m_screenInfoLabel = new QLabel("未开始监控");
+
+    QHBoxLayout* replayCtrlLayout = new QHBoxLayout();
+    m_btnStartReplay = new QPushButton("开始回放");
+    m_btnStopReplay = new QPushButton("停止回放");
+    m_btnStopReplay->setEnabled(false);
+    m_replaySlider = new QSlider(Qt::Horizontal);
+    m_replaySlider->setRange(0, 0);
+
+    replayCtrlLayout->addWidget(m_btnStartReplay);
+    replayCtrlLayout->addWidget(m_btnStopReplay);
+    replayCtrlLayout->addWidget(new QLabel("回放:"));
+    replayCtrlLayout->addWidget(m_replaySlider);
+
+    connect(m_btnStartScreen, &QPushButton::clicked, this, &MainWindow::onStartScreenMonitor);
+    connect(m_btnStopScreen, &QPushButton::clicked, this, &MainWindow::onStopScreenMonitor);
+    connect(m_btnStartReplay, &QPushButton::clicked, this, &MainWindow::onStartReplay);
+    connect(m_btnStopReplay, &QPushButton::clicked, this, &MainWindow::onStopReplay);
+    connect(m_replaySlider, &QSlider::valueChanged, this, &MainWindow::onReplaySliderChanged);
+
+    screenLayout->addLayout(screenCtrlLayout);
+    screenLayout->addWidget(m_screenPreviewLabel);
+    screenLayout->addWidget(m_screenInfoLabel);
+    screenLayout->addLayout(replayCtrlLayout);
+
     infoTabs->addTab(sysInfoPage, "系统信息");
     infoTabs->addTab(softwarePage, "软件管理");
+    infoTabs->addTab(screenPage, "屏幕监控");
     
     // 日志区域
     QGroupBox* logGroup = new QGroupBox("操作日志");
@@ -191,7 +255,8 @@ void MainWindow::createMenuBar()
             "功能:\n"
             "- 远程获取电脑软硬件配置\n"
             "- 批量分发安装软件\n"
-            "- 远程卸载软件");
+            "- 远程卸载软件\n"
+            "- 屏幕实时监控与回放");
     });
 }
 
@@ -296,6 +361,10 @@ void MainWindow::onStopServer()
     m_clientTable->setRowCount(0);
     m_sysInfoText->clear();
     m_softwareTree->clear();
+    m_replayTimer->stop();
+    m_screenPreviewLabel->setText("暂无画面");
+    m_screenPreviewLabel->setPixmap(QPixmap());
+    m_screenInfoLabel->setText("服务器已停止");
     addLog("服务器已停止");
 }
 
@@ -433,6 +502,9 @@ void MainWindow::onClientDisconnected(qintptr clientId)
         m_currentClient = -1;
         m_sysInfoText->clear();
         m_softwareTree->clear();
+        m_screenPreviewLabel->setText("暂无画面");
+        m_screenPreviewLabel->setPixmap(QPixmap());
+        m_replaySlider->setRange(0, 0);
     }
     addLog(QString("客户端 %1 已断开").arg(clientId));
 }
@@ -519,5 +591,148 @@ void MainWindow::onClientSelectionChanged()
         } else {
             m_softwareTree->clear();
         }
+
+        const int frameCount = m_screenRecords.value(m_currentClient).size();
+        {
+            QSignalBlocker blocker(m_replaySlider);
+            m_replaySlider->setRange(0, qMax(0, frameCount - 1));
+            m_replaySlider->setValue(qMax(0, frameCount - 1));
+        }
+
+        if (frameCount > 0) {
+            showScreenFrame(m_currentClient, frameCount - 1);
+        }
     }
+}
+
+
+void MainWindow::onStartScreenMonitor()
+{
+    QList<qintptr> clients = getSelectedClients();
+    if (clients.isEmpty()) {
+        if (m_currentClient > 0) {
+            clients.append(m_currentClient);
+        } else {
+            QMessageBox::information(this, "提示", "请先选择一个客户端");
+            return;
+        }
+    }
+
+    for (qintptr clientId : clients) {
+        m_server->startScreenStream(clientId, m_screenIntervalSpin->value(), m_screenQualitySpin->value());
+    }
+
+    m_btnStartScreen->setEnabled(false);
+    m_btnStopScreen->setEnabled(true);
+    m_screenInfoLabel->setText("正在接收屏幕画面...");
+}
+
+void MainWindow::onStopScreenMonitor()
+{
+    QList<qintptr> clients = getSelectedClients();
+    if (clients.isEmpty() && m_currentClient > 0) {
+        clients.append(m_currentClient);
+    }
+
+    for (qintptr clientId : clients) {
+        m_server->stopScreenStream(clientId);
+    }
+
+    m_btnStartScreen->setEnabled(true);
+    m_btnStopScreen->setEnabled(false);
+    m_screenInfoLabel->setText("屏幕监控已停止");
+}
+
+void MainWindow::onScreenFrameReceived(qintptr clientId, const QByteArray& imageData, qint64 timestamp, const QSize& size)
+{
+    QDir baseDir(QDir::currentPath() + "/recordings");
+    if (!baseDir.exists()) {
+        baseDir.mkpath(".");
+    }
+
+    const QString clientDirPath = baseDir.filePath(QString::number(clientId));
+    QDir().mkpath(clientDirPath);
+
+    const QString filePath = clientDirPath + "/" + QString::number(timestamp) + ".jpg";
+    QFile file(filePath);
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(imageData);
+    }
+
+    ScreenRecord record{filePath, timestamp, size};
+    m_screenRecords[clientId].append(record);
+
+    if (clientId != m_currentClient) {
+        return;
+    }
+
+    int index = m_screenRecords[clientId].size() - 1;
+    {
+        QSignalBlocker blocker(m_replaySlider);
+        m_replaySlider->setRange(0, index);
+        m_replaySlider->setValue(index);
+    }
+
+    showScreenFrame(clientId, index);
+}
+
+void MainWindow::showScreenFrame(qintptr clientId, int frameIndex)
+{
+    const QList<ScreenRecord>& records = m_screenRecords.value(clientId);
+    if (frameIndex < 0 || frameIndex >= records.size()) {
+        return;
+    }
+
+    const ScreenRecord& record = records[frameIndex];
+    QPixmap pixmap(record.filePath);
+    if (pixmap.isNull()) {
+        return;
+    }
+
+    m_screenPreviewLabel->setPixmap(pixmap.scaled(m_screenPreviewLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    QString timeStr = QDateTime::fromMSecsSinceEpoch(record.timestamp).toString("yyyy-MM-dd hh:mm:ss");
+    m_screenInfoLabel->setText(QString("客户端 %1 | 帧 %2/%3 | %4x%5 | %6")
+        .arg(clientId).arg(frameIndex + 1).arg(records.size())
+        .arg(record.size.width()).arg(record.size.height()).arg(timeStr));
+}
+
+void MainWindow::onReplaySliderChanged(int value)
+{
+    if (m_currentClient <= 0) {
+        return;
+    }
+
+    showScreenFrame(m_currentClient, value);
+}
+
+void MainWindow::onStartReplay()
+{
+    if (m_currentClient <= 0 || m_screenRecords.value(m_currentClient).isEmpty()) {
+        QMessageBox::information(this, "提示", "当前客户端没有可回放的画面");
+        return;
+    }
+
+    m_replayTimer->start(200);
+    m_btnStartReplay->setEnabled(false);
+    m_btnStopReplay->setEnabled(true);
+}
+
+void MainWindow::onStopReplay()
+{
+    m_replayTimer->stop();
+    m_btnStartReplay->setEnabled(true);
+    m_btnStopReplay->setEnabled(false);
+}
+
+void MainWindow::onReplayTick()
+{
+    if (m_replaySlider->maximum() <= 0) {
+        return;
+    }
+
+    int next = m_replaySlider->value() + 1;
+    if (next > m_replaySlider->maximum()) {
+        next = 0;
+    }
+    m_replaySlider->setValue(next);
 }
