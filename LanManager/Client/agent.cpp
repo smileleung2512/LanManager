@@ -5,6 +5,9 @@
 #include <QStandardPaths>
 #include <QJsonArray>
 #include <QDebug>
+#include <QGuiApplication>
+#include <QBuffer>
+#include <QDateTime>
 
 Agent::Agent(QObject *parent)
     : QObject(parent)
@@ -12,11 +15,15 @@ Agent::Agent(QObject *parent)
     , m_discoverySocket(new QUdpSocket(this))
     , m_heartbeatTimer(new QTimer(this))
     , m_reconnectTimer(new QTimer(this))
+    , m_screenCaptureTimer(new QTimer(this))
     , m_serverPort(DEFAULT_PORT)
     , m_autoDiscovery(false)
     , m_receiveFile(nullptr)
     , m_expectedFileSize(0)
     , m_receivedSize(0)
+    , m_screenStreaming(false)
+    , m_screenIntervalMs(1000)
+    , m_screenQuality(70)
 {
     connect(m_socket, &QTcpSocket::connected, this, &Agent::onConnected);
     connect(m_socket, &QTcpSocket::disconnected, this, &Agent::onDisconnected);
@@ -26,6 +33,7 @@ Agent::Agent(QObject *parent)
     connect(m_heartbeatTimer, &QTimer::timeout, this, &Agent::sendHeartbeat);
     connect(m_discoverySocket, &QUdpSocket::readyRead, this, &Agent::onBroadcastReceived);
     connect(m_reconnectTimer, &QTimer::timeout, this, &Agent::tryReconnect);
+    connect(m_screenCaptureTimer, &QTimer::timeout, this, &Agent::captureAndSendScreen);
 }
 
 Agent::~Agent()
@@ -103,8 +111,12 @@ void Agent::tryReconnect()
 void Agent::disconnect()
 {
     m_heartbeatTimer->stop();
+    m_screenCaptureTimer->stop();
+    m_screenStreaming = false;
     m_reconnectTimer->stop();
     m_autoDiscovery = false;
+    m_screenCaptureTimer->stop();
+    m_screenStreaming = false;
     if (m_socket->state() != QAbstractSocket::UnconnectedState) {
         m_socket->disconnectFromHost();
     }
@@ -131,6 +143,8 @@ void Agent::onDisconnected()
 {
     emit logMessage("与服务器断开连接");
     m_heartbeatTimer->stop();
+    m_screenCaptureTimer->stop();
+    m_screenStreaming = false;
     emit disconnected();
     
     // 自动重连
@@ -219,6 +233,10 @@ void Agent::processCommand(CommandType cmd, const QByteArray& data)
         handleUninstallSoftware(Protocol::parseJson(data));
         break;
         
+    case CMD_SCREEN_STREAM_CONTROL:
+        handleScreenStreamControl(Protocol::parseJson(data));
+        break;
+
     case CMD_FILE_TRANSFER_START:
         emit logMessage("收到文件传输开始");
         handleFileTransferStart(Protocol::parseJson(data));
@@ -308,6 +326,64 @@ void Agent::handleUninstallSoftware(const QJsonObject& json)
     
     sendJson(CMD_UNINSTALL_RESPONSE, response);
     emit logMessage(success ? "卸载完成" : "卸载失败");
+}
+
+
+void Agent::handleScreenStreamControl(const QJsonObject& json)
+{
+    bool enable = json["enable"].toBool();
+
+    if (!enable) {
+        m_screenCaptureTimer->stop();
+        m_screenStreaming = false;
+        emit logMessage("屏幕监控已停止");
+        return;
+    }
+
+    m_screenIntervalMs = qMax(200, json["intervalMs"].toInt(1000));
+    m_screenQuality = qBound(30, json["quality"].toInt(70), 90);
+    m_screenStreaming = true;
+    m_screenCaptureTimer->start(m_screenIntervalMs);
+
+    emit logMessage(QString("屏幕监控已启动: 间隔 %1ms, 质量 %2")
+        .arg(m_screenIntervalMs).arg(m_screenQuality));
+
+    // 启动时先发送一帧
+    captureAndSendScreen();
+}
+
+void Agent::captureAndSendScreen()
+{
+    if (!m_screenStreaming) {
+        return;
+    }
+
+    QScreen* screen = QGuiApplication::primaryScreen();
+    if (!screen) {
+        emit logMessage("无法获取屏幕对象");
+        return;
+    }
+
+    QPixmap pixmap = screen->grabWindow(0);
+    if (pixmap.isNull()) {
+        emit logMessage("屏幕抓取失败");
+        return;
+    }
+
+    QByteArray imageBytes;
+    QBuffer buffer(&imageBytes);
+    buffer.open(QIODevice::WriteOnly);
+    if (!pixmap.save(&buffer, "JPG", m_screenQuality)) {
+        emit logMessage("屏幕编码失败");
+        return;
+    }
+
+    QJsonObject json;
+    json["timestamp"] = QDateTime::currentMSecsSinceEpoch();
+    json["width"] = pixmap.width();
+    json["height"] = pixmap.height();
+    json["imageBase64"] = QString::fromLatin1(imageBytes.toBase64());
+    sendJson(CMD_SCREEN_FRAME, json);
 }
 
 void Agent::handleFileTransferStart(const QJsonObject& json)

@@ -1,11 +1,11 @@
-#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QCommandLineParser>
 #include <QDebug>
 #include "agent.h"
 
 int main(int argc, char *argv[])
 {
-    QCoreApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
     app.setApplicationName("LanManager Client");
     app.setApplicationVersion("1.0.0");
     

@@ -9,6 +9,9 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QSplitter>
+#include <QSlider>
+#include <QSpinBox>
+#include <QTimer>
 #include "tcpserver.h"
 
 class MainWindow : public QMainWindow
@@ -40,6 +43,15 @@ private slots:
     void onUninstallResult(qintptr clientId, bool success, const QString& message);
     void onFileTransferProgress(qintptr clientId, int percent);
     void onLogMessage(const QString& message);
+    void onScreenFrameReceived(qintptr clientId, const QByteArray& imageData, qint64 timestamp, const QSize& size);
+
+    // 屏幕监控操作
+    void onStartScreenMonitor();
+    void onStopScreenMonitor();
+    void onReplaySliderChanged(int value);
+    void onStartReplay();
+    void onStopReplay();
+    void onReplayTick();
     
     // 表格选择变化
     void onClientSelectionChanged();
@@ -52,6 +64,7 @@ private:
     void updateSoftwareList(const QList<SoftwareInfo>& list);
     QList<qintptr> getSelectedClients();
     void addLog(const QString& message);
+    void showScreenFrame(qintptr clientId, int frameIndex);
     
 private:
     TcpServer* m_server;
@@ -60,6 +73,11 @@ private:
     QTableWidget* m_clientTable;      // 客户端列表
     QTextEdit* m_sysInfoText;         // 系统信息显示
     QTreeWidget* m_softwareTree;      // 软件列表
+    QLabel* m_screenPreviewLabel;     // 屏幕预览
+    QLabel* m_screenInfoLabel;        // 屏幕状态信息
+    QSlider* m_replaySlider;          // 回放滑块
+    QSpinBox* m_screenIntervalSpin;   // 抓帧间隔
+    QSpinBox* m_screenQualitySpin;    // 图像质量
     QTextEdit* m_logText;             // 日志
     QProgressBar* m_progressBar;      // 进度条
     QLabel* m_statusLabel;            // 状态标签
@@ -71,14 +89,28 @@ private:
     QPushButton* m_btnRefreshSoftware;
     QPushButton* m_btnInstall;
     QPushButton* m_btnUninstall;
+    QPushButton* m_btnStartScreen;
+    QPushButton* m_btnStopScreen;
+    QPushButton* m_btnStartReplay;
+    QPushButton* m_btnStopReplay;
     QPushButton* m_btnSelectAll;
     QPushButton* m_btnDeselectAll;
     
+    struct ScreenRecord {
+        QString filePath;
+        qint64 timestamp;
+        QSize size;
+    };
+
     // 当前选中的客户端
     qintptr m_currentClient;
-    
+
+    // 屏幕回放定时器
+    QTimer* m_replayTimer;
+
     // 缓存的软件列表
     QMap<qintptr, QList<SoftwareInfo>> m_softwareLists;
+    QMap<qintptr, QList<ScreenRecord>> m_screenRecords;
 };
 
 #endif // MAINWINDOW_H

@@ -6,6 +6,7 @@
 #include <QUdpSocket>
 #include <QTimer>
 #include <QFile>
+#include <QScreen>
 #include "../Common/protocol.h"
 
 class Agent : public QObject
@@ -56,6 +57,8 @@ private:
     void handleGetSoftware();
     void handleInstallSoftware(const QJsonObject& json);
     void handleUninstallSoftware(const QJsonObject& json);
+    void handleScreenStreamControl(const QJsonObject& json);
+    void captureAndSendScreen();
     void handleFileTransferStart(const QJsonObject& json);
     void handleFileTransferData(const QByteArray& data);
     void handleFileTransferEnd();
@@ -68,6 +71,7 @@ private:
     QUdpSocket* m_discoverySocket;
     QTimer* m_heartbeatTimer;
     QTimer* m_reconnectTimer;
+    QTimer* m_screenCaptureTimer;
     QByteArray m_buffer;  // 接收缓冲区
     QString m_serverHost;
     quint16 m_serverPort;
@@ -79,6 +83,11 @@ private:
     QString m_pendingInstallArgs;
     qint64 m_expectedFileSize;
     qint64 m_receivedSize;
+
+    // 屏幕监控相关
+    bool m_screenStreaming;
+    int m_screenIntervalMs;
+    int m_screenQuality;
 };
 
 #endif // AGENT_H

@@ -156,6 +156,26 @@ void TcpServer::uninstallSoftware(qintptr clientId, const QString& softwareName,
     emit logMessage(QString("向客户端 %1 发送卸载命令: %2").arg(clientId).arg(softwareName));
 }
 
+void TcpServer::startScreenStream(qintptr clientId, int intervalMs, int quality)
+{
+    QJsonObject json;
+    json["enable"] = true;
+    json["intervalMs"] = qMax(200, intervalMs);
+    json["quality"] = qBound(30, quality, 90);
+
+    sendJsonToClient(clientId, CMD_SCREEN_STREAM_CONTROL, json);
+    emit logMessage(QString("向客户端 %1 启动屏幕监控(间隔%2ms,质量%3)")
+        .arg(clientId).arg(json["intervalMs"].toInt()).arg(json["quality"].toInt()));
+}
+
+void TcpServer::stopScreenStream(qintptr clientId)
+{
+    QJsonObject json;
+    json["enable"] = false;
+    sendJsonToClient(clientId, CMD_SCREEN_STREAM_CONTROL, json);
+    emit logMessage(QString("向客户端 %1 停止屏幕监控").arg(clientId));
+}
+
 void TcpServer::onNewConnection()
 {
     while (m_server->hasPendingConnections()) {
@@ -310,6 +330,10 @@ void TcpServer::processCommand(qintptr clientId, CommandType cmd, const QByteArr
     case CMD_FILE_TRANSFER_ACK:
         handleFileTransferAck(clientId, Protocol::parseJson(data));
         break;
+
+    case CMD_SCREEN_FRAME:
+        handleScreenFrame(clientId, Protocol::parseJson(data));
+        break;
         
     default:
         break;
@@ -399,6 +423,20 @@ void TcpServer::handleFileTransferAck(qintptr clientId, const QJsonObject& json)
     
     // 继续传输文件
     continueFileTransfer(clientId);
+}
+
+void TcpServer::handleScreenFrame(qintptr clientId, const QJsonObject& json)
+{
+    QByteArray imageData = QByteArray::fromBase64(json["imageBase64"].toString().toLatin1());
+    if (imageData.isEmpty()) {
+        return;
+    }
+
+    qint64 timestamp = json["timestamp"].toVariant().toLongLong();
+    int width = json["width"].toInt();
+    int height = json["height"].toInt();
+
+    emit screenFrameReceived(clientId, imageData, timestamp, QSize(width, height));
 }
 
 void TcpServer::sendBroadcast()

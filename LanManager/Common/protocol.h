@@ -43,6 +43,8 @@ enum CommandType {
     CMD_FILE_TRANSFER_END = 0x0052,  // 文件传输结束
     CMD_FILE_TRANSFER_ACK = 0x0053,  // 文件传输确认
     CMD_CLIENT_INFO = 0x0060,        // 客户端基本信息(连接时发送)
+    CMD_SCREEN_STREAM_CONTROL = 0x0070, // 屏幕监控控制(开始/停止)
+    CMD_SCREEN_FRAME = 0x0071,       // 屏幕画面帧
     CMD_ERROR = 0x00FF               // 错误响应
 };
 
